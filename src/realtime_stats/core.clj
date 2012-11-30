@@ -1,5 +1,6 @@
 (ns realtime-stats.core
   (:use [backtype.storm clojure config])
+  (:require [realtime-stats.pconn])
   (:import [backtype.storm StormSubmitter LocalCluster]
            (storm.kafka KafkaSpout
                        KafkaConfig
@@ -9,25 +10,36 @@
            (java.util ArrayList))
   (:gen-class))
   
+(realtime-stats.pconn/make-connection)
+
+(comment 
+
+(realtime-stats.pconn/send-data "hello!")
+  )
 
 (defn foo
   "I don't do a whole lot."
   [x]
   (println x "Hello, World!"))
 
+(comment
+  (def testString "US 1 2 3")
+  (clojure.string/split testString #" ")
+  )
+
 (defn createKafkaSpoutConfig
-  []
+  [topic-name zkFile id]
   (let [
         stringScheme (StringScheme.) ;so the kafka spout reads things as strings we need to create the schema
         hostPort (HostPort. "127.0.0.1" 9092) 
         hostList (ArrayList.) 
         append  (.add hostList hostPort)
         staticHost (storm.kafka.KafkaConfig$StaticHosts. hostList 1)
-        spoutConfig (SpoutConfig. staticHost "test-topic" "/zkRootFoo" "fooID")]
+        spoutConfig (SpoutConfig. staticHost topic-name zkFile id)]
     (set! (. spoutConfig scheme) stringScheme) ;tell the spout to read strings
     spoutConfig))
 
-(def kafkaSpout (KafkaSpout. (createKafkaSpoutConfig)))
+(def kafkaSpout (KafkaSpout. (createKafkaSpoutConfig "test-topic" "/zkRootFoo" "fooID")))
 
 
 (defspout sentence-spout ["sentence"]
@@ -64,8 +76,25 @@
 
 (defbolt echo-sentence ["word"] [tuple collector]
   (let [word (.getString tuple 0)]
-    (emit-bolt! collector [(str "hello there!" word)] :anchor tuple)
+    (emit-bolt! collector [word] :anchor tuple)
     (ack! collector tuple)))
+
+(defbolt net-echo-sentence ["word"] [tuple collector]
+  (let [word (.getString tuple 0)]
+    ;(realtime-stats.pconn/send-data word)
+    (emit-bolt! collector [word] :anchor tuple)
+    (ack! collector tuple)))
+
+(defbolt country-count ["word" "count"] {:prepare true}
+  [conf context collector]
+  (let [counts (atom {})]
+    (bolt
+     (execute [tuple]
+       (let [word (.getString tuple 0)]
+         (swap! counts (partial merge-with +) {word 1})
+         (emit-bolt! collector [word (@counts word)] :anchor tuple)
+         (ack! collector tuple)
+         )))))
 
 (defbolt word-count ["word" "count"] {:prepare true}
   [conf context collector]
@@ -84,7 +113,13 @@
    {"1" (spout-spec kafkaSpout)}
    {"5" (bolt-spec {"1" :shuffle}
                    echo-sentence
-                   :p 2)}))
+                   :p 2)
+    "6" (bolt-spec {"5" ["word"]}
+                   country-count
+                   :p 4)
+    "7" (bolt-spec {"6" :shuffle}
+                   net-echo-sentence
+                   :p 1)}))
 
 (defn run-local! []
   (let [cluster (LocalCluster.)]

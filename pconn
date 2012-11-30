@@ -1,0 +1,40 @@
+(ns socketspam.pconn
+    (:use lamina.core aleph.tcp aleph.formats))
+
+(def socketspam-host "localhost")
+(def socketspam-port 9000)     
+
+;Create an endpoint and ground it so messages don't get queued up
+;if nothing is listening       
+(def endpoint (channel))       
+(ground endpoint)              
+
+(defn send-data
+    "Sends the given data to the endpoint channel, which should hopefully
+    be siphoned into the tcp connection"
+    [data]
+    (enqueue endpoint data))
+
+(declare make-connection)
+(defn connection-established 
+    "When a connection is established, forward everything going to endpoint into
+    it. Also, set up recovery handler"
+    [socket]
+    (println "Socket connection established")
+    (on-closed socket make-connection)
+    (siphon endpoint socket))
+
+(defn connection-error 
+    "On connection closed, wait a minute and try to recover. We use future
+    to keep the stack from growing (I think that will work)"
+    [error]
+    (println "Error connecting to socketspam: " error)
+    (Thread/sleep 1000)
+    (future (make-connection)))
+
+(defn make-connection 
+    "Initializes the connection to socketspam"
+    []
+    (on-realized (tcp-client {:host socketspam-host :port socketspam-port})
+        connection-established 
+        connection-error))
